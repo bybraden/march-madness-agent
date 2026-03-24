@@ -28,8 +28,11 @@ class MarchMadnessAgent:
         """
         Retrieve stats for a given team.
 
+        Supports case-insensitive exact matching first, then falls back to
+        partial/fuzzy matching (ignoring punctuation) for convenience.
+
         Args:
-            team_name: The name of the team (case-insensitive).
+            team_name: The name of the team (e.g. "Duke", "st johns", "Michigan St").
 
         Returns:
             A dictionary of team statistics.
@@ -37,13 +40,30 @@ class MarchMadnessAgent:
         Raises:
             ValueError: If the team is not found in the dataset.
         """
-        match = self.data[self.data["team"].str.lower() == team_name.strip().lower()]
+        query = team_name.strip().lower()
+
+        # 1. Exact case-insensitive match
+        match = self.data[self.data["team"].str.lower() == query]
+
+        # 2. Partial match — strip punctuation and check if query is a substring
+        if match.empty:
+            import re
+            def normalize(s):
+                return re.sub(r"[^a-z0-9 ]", "", s.lower())
+
+            norm_query = normalize(query)
+            mask = self.data["team"].apply(lambda t: norm_query in normalize(t))
+            match = self.data[mask]
 
         if match.empty:
-            available = ", ".join(self.data["team"].tolist())
+            available = "\n  ".join(sorted(self.data["team"].tolist()))
             raise ValueError(
-                f"Team '{team_name}' not found. Available teams: {available}"
+                f"Team '{team_name}' not found in dataset.\n\nAvailable teams:\n  {available}"
             )
+
+        if len(match) > 1:
+            # Prefer the shortest name (most specific match)
+            match = match.loc[[match["team"].str.len().idxmin()]]
 
         return match.iloc[0].to_dict()
 
