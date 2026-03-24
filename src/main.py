@@ -8,7 +8,7 @@ def load_matchups(path):
 
 def show_matchups(matchups):
     print("\nSweet 16 Matchups:")
-    for i, row in matchups.iterrows():
+    for _, row in matchups.iterrows():
         print(f"{row['game_id']}. {row['team1']} vs {row['team2']}")
 
 
@@ -24,14 +24,19 @@ def predict_one(agent, matchups):
         return
 
     result = agent.predict_winner(game["team1"], game["team2"])
-    print("\n" + result)
+
+    print(f"\n{game['team1']} vs {game['team2']}")
+    print(f"Winner: {result['winner']} (Confidence: {result['confidence']})")
+    print(result["explanation"])
 
 
 def predict_all(agent, matchups):
     print("\nPredictions for Sweet 16:\n")
     for _, game in matchups.iterrows():
         result = agent.predict_winner(game["team1"], game["team2"])
-        print(result)
+        print(f"{game['team1']} vs {game['team2']}")
+        print(f"Winner: {result['winner']} (Confidence: {result['confidence']})")
+        print(result["explanation"])
         print("-" * 50)
 
 
@@ -55,6 +60,7 @@ def main():
         elif choice == "3":
             predict_all(agent, matchups)
         elif choice == "4":
+            print("Goodbye.")
             break
         else:
             print("Invalid choice.")
