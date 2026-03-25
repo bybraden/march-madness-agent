@@ -1,150 +1,163 @@
-"""
-March Madness Predictor
-A simple AI agent that predicts NCAA tournament game winners based on team stats.
-"""
-
+import difflib
 import pandas as pd
-import os
 
 
 class MarchMadnessAgent:
-    """A simple agent that predicts March Madness game outcomes using team statistics."""
-
     def __init__(self, csv_path: str):
-        """
-        Initialize the agent by loading team data from a CSV file.
-
-        Args:
-            csv_path: Path to the teams CSV file.
-        """
-        if not os.path.exists(csv_path):
-            raise FileNotFoundError(f"Data file not found: {csv_path}")
-
         self.data = pd.read_csv(csv_path)
-        self.data["team"] = self.data["team"].str.strip()
-        print(f"Loaded {len(self.data)} teams from {csv_path}")
 
-    def get_team_stats(self, team_name: str) -> dict:
-        """
-        Retrieve stats for a given team.
+        # Normalize numeric columns if they exist
+        numeric_cols = [
+            "seed",
+            "wins",
+            "losses",
+            "ppg",
+            "oppg",
+            "point_diff",
+            "win_pct",
+            "last10_wins",
+            "sos",
+        ]
+        for col in numeric_cols:
+            if col in self.data.columns:
+                self.data[col] = pd.to_numeric(self.data[col], errors="coerce")
 
-        Supports case-insensitive exact matching first, then falls back to
-        partial/fuzzy matching (ignoring punctuation) for convenience.
+    def get_team_stats(self, team_name: str):
+        normalized_input = team_name.strip().lower()
 
-        Args:
-            team_name: The name of the team (e.g. "Duke", "st johns", "Michigan St").
+        # Common aliases
+        aliases = {
+            "uconn": "UConn",
+            "u conn": "UConn",
+            "st johns": "St. John's",
+            "st. johns": "St. John's",
+            "saint johns": "St. John's",
+            "saint john's": "St. John's",
+            "st john's": "St. John's",
+            "michigan st": "Michigan State",
+            "msu": "Michigan State",
+            "iowa st": "Iowa State",
+        }
 
-        Returns:
-            A dictionary of team statistics.
+        if normalized_input in aliases:
+            canonical = aliases[normalized_input]
+            exact_alias = self.data[
+                self.data["team"].str.strip().str.lower() == canonical.strip().lower()
+            ]
+            if not exact_alias.empty:
+                return exact_alias.iloc[0]
 
-        Raises:
-            ValueError: If the team is not found in the dataset.
-        """
-        query = team_name.strip().lower()
+        # 1) Exact match first
+        exact = self.data[
+            self.data["team"].str.strip().str.lower() == normalized_input
+        ]
+        if not exact.empty:
+            return exact.iloc[0]
 
-        # 1. Exact case-insensitive match
-        match = self.data[self.data["team"].str.lower() == query]
+        # 2) Startswith match for short names like "iowa state"
+        startswith = self.data[
+            self.data["team"].str.strip().str.lower().str.startswith(normalized_input)
+        ]
+        if len(startswith) == 1:
+            return startswith.iloc[0]
 
-        # 2. Partial match — strip punctuation and check if query is a substring
-        if match.empty:
-            import re
-            def normalize(s):
-                return re.sub(r"[^a-z0-9 ]", "", s.lower())
+        # 3) Fuzzy match only if exact failed
+        team_names = self.data["team"].tolist()
+        close = difflib.get_close_matches(team_name, team_names, n=1, cutoff=0.82)
+        if close:
+            matched = self.data[self.data["team"] == close[0]]
+            if not matched.empty:
+                return matched.iloc[0]
 
-            norm_query = normalize(query)
-            mask = self.data["team"].apply(lambda t: norm_query in normalize(t))
-            match = self.data[mask]
+        return None
 
-        if match.empty:
-            available = "\n  ".join(sorted(self.data["team"].tolist()))
-            raise ValueError(
-                f"Team '{team_name}' not found in dataset.\n\nAvailable teams:\n  {available}"
-            )
+    def calculate_score(self, team):
+        seed = team["seed"]
+        wins = team["wins"]
+        losses = team["losses"]
+        ppg = team["ppg"]
+        oppg = team["oppg"]
 
-        if len(match) > 1:
-            # Prefer the shortest name (most specific match)
-            match = match.loc[[match["team"].str.len().idxmin()]]
+        games_played = wins + losses
+        win_pct = (
+            team["win_pct"]
+            if "win_pct" in team.index and pd.notna(team["win_pct"])
+            else wins / games_played
+        )
+        point_diff = (
+            team["point_diff"]
+            if "point_diff" in team.index and pd.notna(team["point_diff"])
+            else ppg - oppg
+        )
+        last10_wins = (
+            team["last10_wins"]
+            if "last10_wins" in team.index and pd.notna(team["last10_wins"])
+            else 7
+        )
+        sos = (
+            team["sos"]
+            if "sos" in team.index and pd.notna(team["sos"])
+            else 5
+        )
 
-        return match.iloc[0].to_dict()
+        # More balanced formula so seed does not dominate
+        score = (
+            (17 - seed) * 1.5      # seed matters, but less
+            + win_pct * 40         # overall quality
+            + point_diff * 3       # scoring margin
+            + last10_wins * 2      # recent form
+            + sos * 1.5            # schedule quality
+        )
 
-    def _compute_score(self, stats: dict) -> float:
-        """
-        Compute a composite score for a team based on their statistics.
+        return round(score, 2)
 
-        Scoring formula:
-        - Lower seed is better (inverted and weighted)
-        - More wins = better
-        - Higher points per game = better
-        - Lower opponent points per game = better (defensive strength)
-
-        Args:
-            stats: Dictionary of team statistics.
-
-        Returns:
-            A float score (higher = stronger team).
-        """
-        seed_score = (16 - stats["seed"]) * 3      # max seed bonus: 45 pts
-        win_score = stats["wins"] * 1.0              # each win = 1 pt
-        offense_score = stats["ppg"] * 0.5           # each PPG = 0.5 pts
-        defense_score = (100 - stats["oppg"]) * 0.5  # lower OPPG = better defense
-
-        total = seed_score + win_score + offense_score + defense_score
-        return round(total, 2)
-
-    def predict_winner(self, team1_name: str, team2_name: str) -> dict:
-        """
-        Predict the winner of a matchup between two teams.
-
-        Args:
-            team1_name: Name of the first team.
-            team2_name: Name of the second team.
-
-        Returns:
-            A dictionary containing:
-                - winner: Name of the predicted winner
-                - loser: Name of the predicted loser
-                - confidence: Score difference between the two teams
-                - explanation: Human-readable reasoning string
-                - team1_score: Composite score for team 1
-                - team2_score: Composite score for team 2
-        """
+    def predict_winner(self, team1_name: str, team2_name: str):
         team1 = self.get_team_stats(team1_name)
         team2 = self.get_team_stats(team2_name)
 
-        score1 = self._compute_score(team1)
-        score2 = self._compute_score(team2)
+        if team1 is None:
+            raise ValueError(f"Team '{team1_name}' not found.")
+        if team2 is None:
+            raise ValueError(f"Team '{team2_name}' not found.")
+
+        score1 = self.calculate_score(team1)
+        score2 = self.calculate_score(team2)
 
         if score1 >= score2:
-            winner, loser = team1, team2
-            winner_score, loser_score = score1, score2
+            winner = team1["team"]
+            loser = team2["team"]
+            winner_stats = team1
+            loser_stats = team2
+            confidence = round(score1 - score2, 2)
         else:
-            winner, loser = team2, team1
-            winner_score, loser_score = score2, score1
-
-        confidence = round(winner_score - loser_score, 2)
+            winner = team2["team"]
+            loser = team1["team"]
+            winner_stats = team2
+            loser_stats = team1
+            confidence = round(score2 - score1, 2)
 
         explanation = (
-            f"{winner['team']} (#{int(winner['seed'])} seed) is predicted to beat "
-            f"{loser['team']} (#{int(loser['seed'])} seed).\n"
-            f"\n"
-            f"  {winner['team']} stats:  {int(winner['wins'])}-{int(winner['losses'])} record, "
-            f"{winner['ppg']} PPG, {winner['oppg']} OPPG  [Score: {winner_score}]\n"
-            f"  {loser['team']} stats:   {int(loser['wins'])}-{int(loser['losses'])} record, "
-            f"{loser['ppg']} PPG, {loser['oppg']} OPPG  [Score: {loser_score}]\n"
-            f"\n"
-            f"  Confidence margin: {confidence} points\n"
+            f"{winner} (#{int(winner_stats['seed'])} seed) is predicted to beat "
+            f"{loser} (#{int(loser_stats['seed'])} seed).\n\n"
+            f"{winner} stats: {int(winner_stats['wins'])}-{int(winner_stats['losses'])} record, "
+            f"{winner_stats['ppg']:.1f} PPG, {winner_stats['oppg']:.1f} OPPG "
+            f"[Score: {max(score1, score2)}]\n"
+            f"{loser} stats: {int(loser_stats['wins'])}-{int(loser_stats['losses'])} record, "
+            f"{loser_stats['ppg']:.1f} PPG, {loser_stats['oppg']:.1f} OPPG "
+            f"[Score: {min(score1, score2)}]\n\n"
+            f"Confidence margin: {confidence} points\n"
         )
 
-        if confidence < 10:
-            explanation += "  This is a very close matchup — could go either way!\n"
-        elif confidence < 25:
-            explanation += "  Moderate edge for the predicted winner.\n"
+        if confidence >= 20:
+            explanation += "Clear advantage for the predicted winner."
+        elif confidence >= 10:
+            explanation += "Moderate edge for the predicted winner."
         else:
-            explanation += "  Clear advantage for the predicted winner.\n"
+            explanation += "This is a very close matchup — could go either way!"
 
         return {
-            "winner": winner["team"],
-            "loser": loser["team"],
+            "winner": winner,
+            "loser": loser,
             "confidence": confidence,
             "explanation": explanation,
             "team1_score": score1,
